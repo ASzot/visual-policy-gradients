@@ -81,7 +81,7 @@ for update_i in range(n_updates):
             obs, reward, done, info = env.step(action)
             logger.collect_step_info(info)
 
-            rollout_obs[i].copy_(obs)
+            rollout_obs[i + 1].copy_(obs)
             rollout_actions[i].copy_(action)
             rollout_rewards[i].copy_(reward)
 
