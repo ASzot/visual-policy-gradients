@@ -12,7 +12,7 @@ from tqdm import tqdm
 num_envs = 32
 H = 5
 lr = 3e-4
-n_updates = 10000
+n_updates = 1000
 gamma = 0.99
 state_dim = 2
 action_dim = 1
@@ -60,7 +60,7 @@ logger.init(LoggerArgs())
 
 policy = Policy()
 
-opt = torch.optim.SGD(policy.parameters(), lr=lr)
+opt = torch.optim.Adam(policy.parameters(), lr=lr)
 
 rollout_obs = torch.zeros(H + 1, num_envs, state_dim)
 rollout_actions = torch.zeros(H, num_envs, action_dim)
