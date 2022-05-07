@@ -96,17 +96,16 @@ def plot_true_performance(envs):
     print(f"Best parameters {max_weight} with value {max_val}")
 
 
-envs = create_vectorized_envs(
-    "PointMass-v0",
-    32,
-    params=use_params,
-)
-plot_true_performance(envs)
-plt.colorbar()
-plt.savefig("data/perf_gt.png", **SAVE_KWARGS)
-plt.show(block=False)
-plt.clf()
-
+# envs = create_vectorized_envs(
+#     "PointMass-v0",
+#     32,
+#     params=use_params,
+# )
+# plot_true_performance(envs)
+# plt.colorbar()
+# plt.savefig("data/perf_gt.png", **SAVE_KWARGS)
+# plt.show(block=False)
+# plt.clf()
 
 # %%
 def compute_returns(rewards, masks, gamma):
@@ -273,16 +272,16 @@ grad_acc, grad_var = compute_grad_mean_vars(use_params, env_sizes)
 
 plt.plot(env_sizes * 5, grad_acc)
 plt.xscale("log", base=2)
-plt.xlabel("Number of Trajectories")
-plt.ylabel("Cosine Distance to True Gradient")
+plt.xlabel("Number of Trajectories", fontsize=AXIS_FONT_SIZE)
+plt.ylabel("Cosine Distance to True Gradient", fontsize=AXIS_FONT_SIZE)
 plt.savefig(f"data/grad_accuracy.png")
 plt.show(block=False)
 plt.clf()
 
 plt.plot(env_sizes * 5, grad_var)
 plt.xscale("log", base=2)
-plt.xlabel("Number of Trajectories")
-plt.ylabel("Gradient Variance")
+plt.xlabel("Number of Trajectories", fontsize=AXIS_FONT_SIZE)
+plt.ylabel("Gradient Variance", fontsize=AXIS_FONT_SIZE)
 plt.savefig(f"data/grad_var.png")
 plt.show(block=False)
 plt.clf()
@@ -305,6 +304,11 @@ envs = create_vectorized_envs(
     params=sparse_reward_params,
 )
 plot_true_performance(envs)
+plt.savefig("data/sparse_reward_perf.png", **SAVE_KWARGS)
+plt.show(block=False)
+plt.clf()
+
+# %%
 all_eval_results = []
 for seed_i in range(100):
     weight_seq = train_policy(
