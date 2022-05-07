@@ -8,9 +8,9 @@
 #       format_version: '1.3'
 #       jupytext_version: 1.13.8
 #   kernelspec:
-#     display_name: Python 3
+#     display_name: Python [conda env:pt_dev] *
 #     language: python
-#     name: python3
+#     name: conda-env-pt_dev-py
 # ---
 
 # %%
@@ -23,15 +23,24 @@ from rl_helper.envs import create_vectorized_envs
 from rl_helper.envs.pointmass.pointmass_env import PointMassParams
 from torch.distributions import Normal
 
+plt.rcParams["text.usetex"] = True
+AXIS_FONT_SIZE = 20
+POLICY_POINT_SIZE = 34
+MIN_POLICY_WEIGHT = -2.0
+MAX_POLICY_WEIGHT = 2.0
+GRID_DENSITY = 51
+NUM_POLICY_UPDATES = 100
+POLICY_TRAJ_CMAP = "spring"
+SAVE_KWARGS = {"bbox_inches": "tight", "pad_inches": 0.1}
+
 use_params = PointMassParams(clip_actions=True, radius=1.0)
 
 
 # %%
 class Policy(nn.Module):
-    def __init__(self):
+    def __init__(self, weight_scale=0.1):
         super().__init__()
-        noise_scale = 0.1
-        self.weight = nn.Parameter(noise_scale * torch.randn(2))
+        self.weight = nn.Parameter(weight_scale * torch.randn(2))
         self.logstd = nn.Parameter(torch.zeros(1, 1))
 
     def forward(self, state):
@@ -56,26 +65,35 @@ def evaluate(num_eval_episodes, policy, envs):
 
 # %%
 def plot_true_performance(envs):
-    grid_density = 20
-    min_range = -2.0
-    max_range = 2.0
-
-    policy_values = torch.zeros(grid_density, grid_density)
-    weight_X = torch.linspace(min_range, max_range, grid_density)
-    weight_Y = torch.linspace(min_range, max_range, grid_density)
+    policy_values = torch.zeros(GRID_DENSITY, GRID_DENSITY)
+    weight_X = torch.linspace(MIN_POLICY_WEIGHT, MAX_POLICY_WEIGHT, GRID_DENSITY)
+    weight_Y = torch.linspace(MIN_POLICY_WEIGHT, MAX_POLICY_WEIGHT, GRID_DENSITY)
     policy = Policy()
     # Grid over [-2,0]^2
+    max_val = -10000
+    max_weight = None
+
     for i, weight_x in enumerate(weight_X):
         for j, weight_y in enumerate(weight_Y):
             policy.weight.data.copy_(torch.tensor([weight_x, weight_y]))
             policy_values[i, j] = evaluate(1, policy, envs)
+            if policy_values[i, j] > max_val:
+                max_val = policy_values[i, j]
+                max_weight = [weight_x, weight_y]
 
     fig = plt.imshow(
         policy_values,
-        extent=[min_range, max_range, min_range, max_range],
+        extent=[
+            MIN_POLICY_WEIGHT,
+            MAX_POLICY_WEIGHT,
+            MIN_POLICY_WEIGHT,
+            MAX_POLICY_WEIGHT,
+        ],
         origin="lower",
     )
-    print("Maximum possible reward is ", policy_values.max())
+    plt.xlabel("$\\theta_1$", fontsize=AXIS_FONT_SIZE)
+    plt.ylabel("$\\theta_2$", fontsize=AXIS_FONT_SIZE)
+    print(f"Best parameters {max_weight} with value {max_val}")
 
 
 envs = create_vectorized_envs(
@@ -85,12 +103,12 @@ envs = create_vectorized_envs(
 )
 plot_true_performance(envs)
 plt.colorbar()
-plt.savefig("data/perf_gt.png")
+plt.savefig("data/perf_gt.png", **SAVE_KWARGS)
+plt.show(block=False)
 plt.clf()
 
+
 # %%
-
-
 def compute_returns(rewards, masks, gamma):
     returns = torch.zeros(rewards.shape[0] + 1, *rewards.shape[1:])
     for step in reversed(range(rewards.size(0))):
@@ -122,67 +140,61 @@ def rollout_policy(policy, envs, num_steps):
 
 # %%
 
-num_steps = 5
-num_updates = 10
-num_envs = 256
-gamma = 0.99
+
+def train_policy(envs, num_steps, num_updates, gamma=0.99, lr=1e-2, policy=None):
+    if policy is None:
+        policy = Policy()
+    opt = torch.optim.Adam(lr=lr, params=policy.parameters())
+    log_interval = 20
+
+    weight_seq = [policy.weight.data.detach().clone()]
+    for update_i in range(num_updates):
+        obs, rewards, actions, masks = rollout_policy(policy, envs, num_steps)
+        returns = compute_returns(rewards, masks, gamma)
+        log_probs = policy(obs[:-1]).log_prob(actions).sum(-1, keepdim=True)
+        loss = (-returns[:-1] * log_probs).mean()
+        opt.zero_grad()
+        loss.backward()
+        opt.step()
+        if policy.weight[0] < MIN_POLICY_WEIGHT or policy.weight[1] < MIN_POLICY_WEIGHT:
+            break
+        weight_seq.append(policy.weight.detach().clone())
+
+    weight_seq = torch.stack(weight_seq, dim=0)
+    return weight_seq
+
+
 envs = create_vectorized_envs(
     "PointMass-v0",
-    num_envs,
+    256,
     params=use_params,
 )
-policy = Policy()
-opt = torch.optim.Adam(lr=1e-2, params=policy.parameters())
-log_interval = 20
 
-weight_seq = [policy.weight.data.detach().clone()]
-for update_i in range(num_updates):
-    obs, rewards, actions, masks = rollout_policy(policy, envs, num_steps)
-    returns = compute_returns(rewards, masks, gamma)
-    log_probs = policy(obs[:-1]).log_prob(actions).sum(-1, keepdim=True)
-    loss = (-returns[:-1] * log_probs).mean()
-    opt.zero_grad()
-    loss.backward()
-    opt.step()
-    weight_seq.append(policy.weight.detach().clone())
-
-    if update_i % log_interval == 0:
-        eval_envs = create_vectorized_envs(
-            "PointMass-v0",
-            num_envs,
-            params=use_params,
-        )
-        total_reward = evaluate(10, policy, eval_envs)
-        print(f"Update #{update_i}: Reward {total_reward:.4f}")
-
-weight_seq = torch.stack(weight_seq, dim=0)
+weight_seq = train_policy(envs, num_steps=5, num_updates=NUM_POLICY_UPDATES)
 plot_true_performance(envs)
 fig = plt.scatter(
     weight_seq[:, 0],
     weight_seq[:, 1],
     c=torch.arange(weight_seq.size(0)),
-    s=4,
-    cmap=plt.get_cmap("Reds"),
+    s=POLICY_POINT_SIZE,
+    cmap=plt.get_cmap(POLICY_TRAJ_CMAP),
 )
-plt.savefig("data/perf_reinforce_opt.png")
+plt.savefig("data/perf_reinforce_opt.png", **SAVE_KWARGS)
+plt.show(block=False)
 plt.clf()
 
 # %%
 # Compute the loss function estimate as a function of the batch size.
-grid_density = 50
-min_range = -2.0
-max_range = 2.0
+weight_X = torch.linspace(MIN_POLICY_WEIGHT, MAX_POLICY_WEIGHT, GRID_DENSITY)
+weight_Y = torch.linspace(MIN_POLICY_WEIGHT, MAX_POLICY_WEIGHT, GRID_DENSITY)
 
-weight_X = torch.linspace(min_range, max_range, grid_density)
-weight_Y = torch.linspace(min_range, max_range, grid_density)
-
-for num_envs in [1, 2, 4, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096]:
+for num_envs in [1, 2, 4, 16, 32, 64, 128, 1024]:
     envs = create_vectorized_envs(
         "PointMass-v0",
         num_envs,
         params=use_params,
     )
-    policy_values = torch.zeros(grid_density, grid_density)
+    policy_values = torch.zeros(GRID_DENSITY, GRID_DENSITY)
     policy = Policy()
     for i, weight_x in enumerate(weight_X):
         for j, weight_y in enumerate(weight_Y):
@@ -194,13 +206,20 @@ for num_envs in [1, 2, 4, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096]:
             loss = (-returns[:-1] * log_probs).mean()
             policy_values[i, j] = loss.item()
 
+    plt.clf()
     fig = plt.imshow(
         policy_values,
-        extent=[min_range, max_range, min_range, max_range],
+        extent=[
+            MIN_POLICY_WEIGHT,
+            MAX_POLICY_WEIGHT,
+            MIN_POLICY_WEIGHT,
+            MAX_POLICY_WEIGHT,
+        ],
         origin="lower",
     )
-    plt.savefig(f"data/perf_est_{num_envs}.png")
-    plt.clf()
+    plt.xlabel("$\\theta_1$", fontsize=AXIS_FONT_SIZE)
+    plt.ylabel("$\\theta_2$", fontsize=AXIS_FONT_SIZE)
+    plt.savefig(f"data/perf_est_{num_envs}.png", **SAVE_KWARGS)
 
 # %%
 # Compute the gradient accuracy/variance
@@ -211,7 +230,7 @@ def get_loss(policy, envs):
     return (-returns[:-1] * log_probs).mean()
 
 
-def compute_grad_mean_vars(env_params, append_name, env_sizes):
+def compute_grad_mean_vars(env_params, env_sizes):
     policy = Policy()
     envs = create_vectorized_envs(
         "PointMass-v0",
@@ -219,16 +238,16 @@ def compute_grad_mean_vars(env_params, append_name, env_sizes):
         params=env_params,
     )
     true_loss = get_loss(policy, envs)
-    true_loss.backward(retain_graph=True)
+    policy.zero_grad()
+    true_loss.backward()
     true_grad = policy.weight.grad.detach().clone()
 
-    cosine_sim = nn.CosineSimilarity(dim=-1)
-    gt_sims = []
-    all_pairwise_sims = []
-    n_var_samples = 100
+    cosine_dist = nn.CosineSimilarity(dim=-1)
+    dists = []
+    all_pairwise_dists = []
+    n_samples = 100
 
     for num_envs in env_sizes:
-        print("Computing for ", num_envs)
         envs = create_vectorized_envs(
             "PointMass-v0",
             num_envs,
@@ -236,44 +255,81 @@ def compute_grad_mean_vars(env_params, append_name, env_sizes):
         )
 
         all_grads = []
-        for _ in range(n_var_samples):
+        for _ in range(n_samples):
+            policy.zero_grad()
             loss = get_loss(policy, envs)
-            loss.backward(retain_graph=True)
+            loss.backward()
             all_grads.append(policy.weight.grad.detach().clone())
-        all_grads = torch.stack(all_grads, dim=0)
+        all_grads = torch.stack(all_grads, 0)
 
-        gt_sims.append(cosine_sim(all_grads[0], true_grad).mean())
-        all_pairwise_sims.append(all_grads.std(dim=0).mean())
-    return gt_sims, all_pairwise_sims
+        dists.append(cosine_dist(all_grads, true_grad).mean())
+        all_pairwise_dists.append(all_grads.std(0).mean())
+
+    return dists, all_pairwise_dists
 
 
-stochastic_use_params = PointMassParams(
-    clip_actions=True, radius=1.0, transition_noise=0.2
-)
+env_sizes = torch.tensor([1, 2, 4, 16, 32, 64, 128, 256, 512, 1024])
+grad_acc, grad_var = compute_grad_mean_vars(use_params, env_sizes)
 
-env_sizes = torch.tensor([1, 2, 4, 16, 32, 64, 128])
-
-grad_acc, grad_var = compute_grad_mean_vars(use_params, "", env_sizes)
-stoch_grad_acc, stoch_grad_var = compute_grad_mean_vars(
-    stochastic_use_params, "stochastic_", env_sizes
-)
-
-plt.plot(env_sizes * 5, grad_acc, label="Deterministic")
-plt.plot(env_sizes * 5, stoch_grad_acc, label="Stochastic")
+plt.plot(env_sizes * 5, grad_acc)
 plt.xscale("log", base=2)
-plt.legend()
+plt.xlabel("Number of Trajectories")
+plt.ylabel("Cosine Distance to True Gradient")
 plt.savefig(f"data/grad_accuracy.png")
+plt.show(block=False)
 plt.clf()
 
-plt.plot(env_sizes * 5, grad_var, label="Deterministic")
-plt.plot(env_sizes * 5, stoch_grad_var, label="Stochastic")
+plt.plot(env_sizes * 5, grad_var)
 plt.xscale("log", base=2)
-plt.legend()
+plt.xlabel("Number of Trajectories")
+plt.ylabel("Gradient Variance")
 plt.savefig(f"data/grad_var.png")
+plt.show(block=False)
 plt.clf()
 
 
 # %%
-# Optimization (create a second area of high reward in different area, put
-# penalty ring around the goal, what does the reward landscape look like for
-# sparse reward?)
+def sparse_reward(cur_dist, prev_dist):
+    reward = torch.zeros(cur_dist.shape)
+    reward[cur_dist < 0.2] = 1.0
+    return reward
+
+
+sparse_reward_params = PointMassParams(
+    clip_actions=True, radius=1.0, custom_reward=sparse_reward
+)
+
+envs = create_vectorized_envs(
+    "PointMass-v0",
+    32,
+    params=sparse_reward_params,
+)
+plot_true_performance(envs)
+all_eval_results = []
+for seed_i in range(100):
+    weight_seq = train_policy(
+        envs,
+        num_steps=5,
+        num_updates=50,
+        lr=1e-1,
+        policy=Policy(),
+    )
+    eval_policy = Policy()
+    eval_policy.weight.data.copy_(weight_seq[-1])
+    all_eval_results.append(evaluate(5, eval_policy, envs))
+    if seed_i > 10:
+        continue
+    fig = plt.scatter(
+        weight_seq[:, 0],
+        weight_seq[:, 1],
+        c=torch.arange(weight_seq.size(0)),
+        s=POLICY_POINT_SIZE,
+        cmap=plt.get_cmap(POLICY_TRAJ_CMAP),
+    )
+print(
+    "% that achieved goal",
+    sum(1 for v in all_eval_results if v > 0) / len(all_eval_results),
+)
+plt.savefig("data/sparse_reward_opt.png", **SAVE_KWARGS)
+plt.show(block=False)
+plt.clf()
