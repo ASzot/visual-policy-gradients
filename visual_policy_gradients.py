@@ -62,8 +62,6 @@ def evaluate(num_eval_episodes, policy, envs):
             total_rewards.append(info[done_i]["episode"]["r"])
     return sum(total_rewards) / len(total_rewards)
 
-
-# %%
 def plot_true_performance(envs):
     policy_values = torch.zeros(GRID_DENSITY, GRID_DENSITY)
     weight_X = torch.linspace(MIN_POLICY_WEIGHT, MAX_POLICY_WEIGHT, GRID_DENSITY)
@@ -96,16 +94,18 @@ def plot_true_performance(envs):
     print(f"Best parameters {max_weight} with value {max_val}")
 
 
-# envs = create_vectorized_envs(
-#     "PointMass-v0",
-#     32,
-#     params=use_params,
-# )
-# plot_true_performance(envs)
-# plt.colorbar()
-# plt.savefig("data/perf_gt.png", **SAVE_KWARGS)
-# plt.show(block=False)
-# plt.clf()
+# %%
+envs = create_vectorized_envs(
+    "PointMass-v0",
+    32,
+    params=use_params,
+)
+plot_true_performance(envs)
+plt.colorbar()
+plt.savefig("data/perf_gt.png", **SAVE_KWARGS)
+plt.show(block=False)
+plt.clf()
+
 
 # %%
 def compute_returns(rewards, masks, gamma):
