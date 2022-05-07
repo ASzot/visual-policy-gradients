@@ -6,7 +6,7 @@
 #       extension: .py
 #       format_name: percent
 #       format_version: '1.3'
-#       jupytext_version: 1.13.6
+#       jupytext_version: 1.13.8
 #   kernelspec:
 #     display_name: Python 3
 #     language: python
@@ -23,20 +23,14 @@ from rl_helper.envs import create_vectorized_envs
 from rl_helper.envs.pointmass.pointmass_env import PointMassParams
 from torch.distributions import Normal
 
-# %%
 use_params = PointMassParams(clip_actions=True, radius=1.0)
-envs = create_vectorized_envs(
-    "PointMass-v0",
-    32,
-    params=use_params,
-)
 
 
 # %%
 class Policy(nn.Module):
     def __init__(self):
         super().__init__()
-        noise_scale = 1.0
+        noise_scale = 0.1
         self.weight = nn.Parameter(noise_scale * torch.randn(2))
         self.logstd = nn.Parameter(torch.zeros(1, 1))
 
@@ -61,7 +55,7 @@ def evaluate(num_eval_episodes, policy, envs):
 
 
 # %%
-def plot_true_performance():
+def plot_true_performance(envs):
     grid_density = 20
     min_range = -2.0
     max_range = 2.0
@@ -84,9 +78,15 @@ def plot_true_performance():
     print("Maximum possible reward is ", policy_values.max())
 
 
-plot_true_performance()
+envs = create_vectorized_envs(
+    "PointMass-v0",
+    32,
+    params=use_params,
+)
+plot_true_performance(envs)
 plt.colorbar()
 plt.savefig("data/perf_gt.png")
+plt.clf()
 
 # %%
 
@@ -123,7 +123,7 @@ def rollout_policy(policy, envs, num_steps):
 # %%
 
 num_steps = 5
-num_updates = 100
+num_updates = 10
 num_envs = 256
 gamma = 0.99
 envs = create_vectorized_envs(
@@ -156,7 +156,7 @@ for update_i in range(num_updates):
         print(f"Update #{update_i}: Reward {total_reward:.4f}")
 
 weight_seq = torch.stack(weight_seq, dim=0)
-plot_true_performance()
+plot_true_performance(envs)
 fig = plt.scatter(
     weight_seq[:, 0],
     weight_seq[:, 1],
@@ -168,7 +168,8 @@ plt.savefig("data/perf_reinforce_opt.png")
 plt.clf()
 
 # %%
-grid_density = 20
+# Compute the loss function estimate as a function of the batch size.
+grid_density = 50
 min_range = -2.0
 max_range = 2.0
 
@@ -200,3 +201,79 @@ for num_envs in [1, 2, 4, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096]:
     )
     plt.savefig(f"data/perf_est_{num_envs}.png")
     plt.clf()
+
+# %%
+# Compute the gradient accuracy/variance
+def get_loss(policy, envs):
+    obs, rewards, actions, masks = rollout_policy(policy, envs, num_steps=5)
+    returns = compute_returns(rewards, masks, gamma=0.99)
+    log_probs = policy(obs[:-1]).log_prob(actions).sum(-1, keepdim=True)
+    return (-returns[:-1] * log_probs).mean()
+
+
+def compute_grad_mean_vars(env_params, append_name, env_sizes):
+    policy = Policy()
+    envs = create_vectorized_envs(
+        "PointMass-v0",
+        10000,
+        params=env_params,
+    )
+    true_loss = get_loss(policy, envs)
+    true_loss.backward(retain_graph=True)
+    true_grad = policy.weight.grad.detach().clone()
+
+    cosine_sim = nn.CosineSimilarity(dim=-1)
+    gt_sims = []
+    all_pairwise_sims = []
+    n_var_samples = 100
+
+    for num_envs in env_sizes:
+        print("Computing for ", num_envs)
+        envs = create_vectorized_envs(
+            "PointMass-v0",
+            num_envs,
+            params=use_params,
+        )
+
+        all_grads = []
+        for _ in range(n_var_samples):
+            loss = get_loss(policy, envs)
+            loss.backward(retain_graph=True)
+            all_grads.append(policy.weight.grad.detach().clone())
+        all_grads = torch.stack(all_grads, dim=0)
+
+        gt_sims.append(cosine_sim(all_grads[0], true_grad).mean())
+        all_pairwise_sims.append(all_grads.std(dim=0).mean())
+    return gt_sims, all_pairwise_sims
+
+
+stochastic_use_params = PointMassParams(
+    clip_actions=True, radius=1.0, transition_noise=0.2
+)
+
+env_sizes = torch.tensor([1, 2, 4, 16, 32, 64, 128])
+
+grad_acc, grad_var = compute_grad_mean_vars(use_params, "", env_sizes)
+stoch_grad_acc, stoch_grad_var = compute_grad_mean_vars(
+    stochastic_use_params, "stochastic_", env_sizes
+)
+
+plt.plot(env_sizes * 5, grad_acc, label="Deterministic")
+plt.plot(env_sizes * 5, stoch_grad_acc, label="Stochastic")
+plt.xscale("log", base=2)
+plt.legend()
+plt.savefig(f"data/grad_accuracy.png")
+plt.clf()
+
+plt.plot(env_sizes * 5, grad_var, label="Deterministic")
+plt.plot(env_sizes * 5, stoch_grad_var, label="Stochastic")
+plt.xscale("log", base=2)
+plt.legend()
+plt.savefig(f"data/grad_var.png")
+plt.clf()
+
+
+# %%
+# Optimization (create a second area of high reward in different area, put
+# penalty ring around the goal, what does the reward landscape look like for
+# sparse reward?)
